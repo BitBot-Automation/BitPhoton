@@ -8,33 +8,38 @@
 #include <ESPAsyncWebServer.h>
 #include <WebSocketsServer.h>
 #include <BH1750.h>
-#include <Wire.h>
+#include <Wire.h> 
 #include <CAN.h>
+#include <RGBLED.cpp>
 
 // Debug mode
 #define DEBUG_BIT_DEVICE true
 
+// Use CAN
+// #define USE_CAN true
+
 // Global variables
-int deviceId = 0;
+uint8_t deviceId = 0;
+uint8_t connectedClients = 0;
 
 // Constants
 const String PRODUCT_NAME = "BitPhoton";
 const String PRODUCT_VERSION = "1.0.0";
 const String PRODUCT_ID = PRODUCT_NAME + "@" + PRODUCT_VERSION;
 
-const int SERVER_PORT = 80;
-const int SOCKET_PORT = 81;
+const uint8_t SERVER_PORT = 80;
+const uint8_t SOCKET_PORT = 81;
 
-const int UPDATE_INTERVAL = 200;
+const uint UPDATE_INTERVAL = 200;
 
 //! FOR ESP32
-const int LED_PINS[4] = { 4, 16, 17, 5 };
-const int CAN_RX = 27;
-const int CAN_TX = 26;
-const int CAN_RATE = 500E3;
+const uint LED_PINS[4] = { 2, 4, 5, 18 };
+const uint CAN_RX = 16;
+const uint CAN_TX = 17;
+const uint CAN_RATE = 500E3;
 
-//! FOR ESP32 S3
-// const int LED_PINS[4] = { 36, 37, 38, 39 };
+// LED states
+uint ledIdStates[4];
 
 // Preferences
 Preferences preferences;
@@ -51,9 +56,6 @@ DeviceState state;
 
 // Sensors
 BH1750 lightSensor;
-
-// LED states
-int ledIdStates[4];
 
 class wifi {
     public:
@@ -138,6 +140,7 @@ class Commands {
             char* action = commands.next();
             char* key = commands.next();
             char* value = commands.next();
+            char* flag = commands.next();
 
             if (action == NULL) {
                 Serial.println("Invalid command");
@@ -147,6 +150,10 @@ class Commands {
             if (strcmp(action, "set") == 0) {
                 preferences.putString(key, value);
                 Serial.println("Set " + String(key) + " to " + String(value));
+                if (strcmp(key, "id") == 0) {
+                    if (strcmp(flag, "-r") == 0) ESP.restart();
+                    else Serial.println("RESTART REQUIRED TO APPLY ID CHANGE (use -r flag)");
+                }
             } else if (strcmp(action, "get") == 0) {
                 Serial.println(preferences.getString(key));
             } else if (strcmp(action, "clear") == 0) {
@@ -219,14 +226,19 @@ class Commands {
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
     switch(type) {
         case WStype_DISCONNECTED:
+            connectedClients--;
             Serial.printf("[%u] Disconnected!\n", num);
-            utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 250, 0, 1);
+            Serial.println("Connected clients: " + String(connectedClients));
+            if (connectedClients > 0) utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 100, 0, connectedClients);
+            else utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 250, 0, 1);
             break;
         case WStype_CONNECTED:
             {
+                connectedClients++;
                 IPAddress ip = socket.remoteIP(num);
                 Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
-                utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 250, 25, 1);
+                Serial.println("Connected clients: " + String(connectedClients));
+                utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 100, 0, connectedClients);
             }
             break;
         case WStype_TEXT:
@@ -239,11 +251,12 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
 }
 
 void setup() {
-    // Wait for ESP to bootup
-    delay(500);
-    
     // Configure logging to supress dumb HAL errors 🙃
-    esp_log_level_set("gpio", ESP_LOG_NONE);
+    if (!DEBUG_BIT_DEVICE) {
+        esp_log_level_set("gpio", ESP_LOG_NONE);
+        esp_log_level_set("ledc", ESP_LOG_NONE);
+        esp_log_level_set("*", ESP_LOG_NONE);
+    }
 
     // Configure all leds and initialize
     for (int i = 0; i < sizeof(LED_PINS) / sizeof(LED_PINS[0]); i++) {
@@ -270,6 +283,9 @@ void setup() {
         deviceId = 0;
     }
 
+    // Wait for ESP to bootup
+    delay(2000);
+
     // Write device id to leds
     utils::getLEDDigit(deviceId, ledIdStates);
     for (int i = 0; i < sizeof(LED_PINS) / sizeof(LED_PINS[0]); i++) digitalWrite(LED_PINS[i], LOW);
@@ -282,21 +298,24 @@ void setup() {
     lightSensor.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
 
     // Configure CAN
+    #ifdef USE_CAN
     CAN.setPins(CAN_RX, CAN_TX);
     if (CAN.begin(CAN_RATE)) {
         Serial.println("CAN started");
         utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 250, 25, 2);
         
         Serial.println("Sending startup packet");
-        CAN.beginExtendedPacket(deviceId);
+        CAN.beginPacket(deviceId);
         CAN.write('u');
         CAN.write('p');
         CAN.endPacket();
+        
         Serial.println("Packet sent");
     } else {
         Serial.println("CAN failed to start");
         utils::blinkLEDs(ledIdStates, LED_PINS, sizeof(LED_PINS) / sizeof(LED_PINS[0]), 250, 0, 1);
     }
+    #endif
     
     // Configure state
     state.diskUsage = (float)ESP.getSketchSize() / (float)ESP.getFlashChipSize();
@@ -357,7 +376,7 @@ void setup() {
         doc["flashSize"] = ESP.getFlashChipSize();
         doc["memoryUsage"] = (float)ESP.getFreeHeap() / (float)ESP.getHeapSize();
         doc["diskUsage"] = (float)ESP.getSketchSize() / (float)ESP.getFlashChipSize();
-        doc["uptime"] = (int)millis() / 1000;
+        doc["uptime"] = (uint)millis() / 1000;
 
         String result;
         serializeJson(doc, result);
@@ -434,6 +453,7 @@ void setup() {
     commands.addCommand("get_state", Commands::get_state);
 
     // Print device info
+    Serial.println("----- BOOTUP COMPLETE -----");
     Serial.println("DEVICE/ID: " + String(deviceId));
     Serial.println("PRODUCT/ID: " + PRODUCT_ID);
     Serial.println("PRODUCT/NAME: " + PRODUCT_NAME);

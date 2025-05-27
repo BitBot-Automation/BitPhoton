@@ -3,7 +3,7 @@
 
 class utils {
     public:
-        static void getLEDDigit(int digit, int ledStates[]) {
+        static void getLEDDigit(uint digit, uint ledStates[]) {
             if (digit >= 0 && digit <= 15) {
                 switch (digit) {
                     case 0:
@@ -112,7 +112,7 @@ class utils {
             }
         }
 
-        static void blinkLEDs(int ledStates[], const int ledPins[], int leds, int delayTime, int delayBetween = 0, int times = 1) {
+        static void blinkLEDs(uint ledStates[], const uint ledPins[], uint leds, uint delayTime, uint delayBetween = 0, uint times = 1) {
             for (int j = 0; j < leds; j++) {
                 pinMode(ledPins[j], OUTPUT);
                 digitalWrite(ledPins[j], LOW);
